@@ -282,3 +282,70 @@ reviewer can't reach through the API/UI.
   which cases exist.
 - **English-only.** Tokenization, the common-word list, and the name-hint
   list assume English text.
+## Database File (`kivi.db`)
+
+Kivi uses SQLite for durable memory storage.
+
+The runtime database is:
+
+```text
+data/kivi.db
+```
+
+`kivi.db` is a generated/runtime file and is **not required to be committed to the repository**. The database schema is created automatically from:
+
+```text
+database/migrations/001_init.sql
+```
+
+when the application starts.
+
+Therefore, a fresh clone can create a working database automatically without requiring a pre-existing `kivi.db`.
+
+### Fresh setup
+
+Start the application:
+
+```bash
+cd backend
+
+KIVI_DB_PATH=../data/kivi.db \
+PYTHONPATH=. \
+uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+On startup, Kivi automatically applies the database migrations.
+
+### Optional seed data
+
+To populate the database with the demonstration memories, import:
+
+```text
+data/seed/seed.jsonl
+```
+
+using:
+
+```bash
+cd backend
+
+KIVI_DB_PATH=../data/kivi.db \
+PYTHONPATH=. \
+python3 -m app.import_data ../data/seed/seed.jsonl
+```
+
+This creates the demo memory state through the normal learning/import pipeline rather than by manually inserting database rows.
+
+### Why `kivi.db` is not committed
+
+The SQLite file contains runtime state such as learned memories, evidence, and decision history. Keeping it out of source control makes the repository reproducible and allows the database to be recreated from the committed migration and seed files.
+
+If a reviewer already has a `data/kivi.db`, it can be used directly by setting:
+
+```bash
+KIVI_DB_PATH=../data/kivi.db
+```
+
+The database file may also be supplied separately when inspecting a particular runtime/demo state.
