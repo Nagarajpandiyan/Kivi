@@ -1648,19 +1648,3 @@ http://localhost:8000/
 
 ---
 
-# 63. Final Submission Information
-
-Before submitting the assignment, fill in:
-
-```text
-GitHub Repository:
-<YOUR_GITHUB_REPOSITORY_URL>
-
-Final Commit SHA:
-<YOUR_FINAL_COMMIT_SHA>
-
-Hosted URL:
-<YOUR_HOSTED_URL_OR_N/A>
-```
-
-Do not put placeholder values in the final submission.
