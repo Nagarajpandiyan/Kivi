@@ -1,290 +1,222 @@
-# Architecture
+# Kivi — Word-Level / Phonetic Memory
 
-## 1. System overview
+Kivi is a backend-focused full-stack system that learns user-specific word-level and phonetic preferences from ASR output and formatted text.
 
-```
-                 ┌─────────────────────────────────────────────┐
-                 │                  frontend/                   │
-                 │        (static HTML/CSS/JS, no build)         │
-                 └───────────────────┬───────────────────────────┘
-                                     │ fetch() -> /api/*
-┌────────────────────────────────────▼──────────────────────────────────┐
-│                         backend/app  (FastAPI)                         │
-│                                                                          │
-│  api/routes.py  ── HTTP layer, request/response only                    │
-│      │                                                                   │
-│      ├─ memory/lifecycle.py  ── learning orchestration (the "brain")    │
-│      │     ├─ memory/extraction.py   candidate detection (diff)         │
-│      │     ├─ memory/validation.py   candidate validation               │
-│      │     └─ memory/confidence.py   confidence scoring                 │
-│      │                                                                   │
-│      ├─ retrieval/retrieve.py  ── find memories relevant to a request   │
-│      ├─ decision/engine.py     ── APPLY / IGNORE + reason per memory    │
-│      └─ formatter/format.py    ── actually rewrite the output text      │
-│                                                                          │
-│  db.py  ── sqlite3 connection + migration runner                        │
-└───────────────────────────────────┬─────────────────────────────────────┘
-                                    │
-                          database/migrations/001_init.sql
-                                    │
-                              data/kivi.db  (SQLite)
+The system takes:
+
+1. ASR output
+2. Normally formatted text
+
+and produces:
+
+3. Memory-aware text using previously learned user-specific corrections.
+
+### Example
+
+**ASR**
+
+```text
+ask aditya to review the sarvam kiwi service
 ```
 
-No component calls an LLM. See section 10.
+**Formatted**
 
-## 2. Data flow
-
-### Learning (`POST /memory/learn`, also used by `/import` and the UI's "Teach it")
-
-```
-(asr, formatted)
-   -> extraction.extract_candidates()      word-level diff -> RawCandidate list
-   -> validation.validate_candidate()      ordinary formatting? too different? -> keep or reject
-   -> lifecycle.learn():
-        - look up existing memory for this (user, normalized source term)
-        - none yet      -> create memory, status=CANDIDATE, 1 supporting evidence
-        - exists, agrees -> +1 supporting evidence, recompute confidence
-        - exists, disagrees -> +1 conflicting evidence, recompute confidence
-        - also: if an existing memory's term appears in the ASR but the
-          formatted text left it *uncorrected*, that is itself conflicting
-          evidence (the "expected" correction didn't happen)
-   -> confidence.compute_confidence()
-   -> lifecycle transition (CANDIDATE -> ACTIVE -> UPDATED -> DEACTIVATED)
+```text
+Ask Aditya to review the Sarvam Kiwi service.
 ```
 
-### Processing (`POST /transcript/process`)
+**Memory-aware**
 
-```
-(asr, formatted)
-   -> retrieval.retrieve_relevant_memories()   memories whose term appears in this input
-   -> decision.decide_all()                     APPLY / IGNORE + reason, per memory
-   -> formatter.apply_memory()                  rewrite formatted text for APPLY decisions
-   -> persist a memory_decisions row per memory considered (provenance)
-   -> return {output, decision, intervened, memories_used, decisions[], reason}
+```text
+Ask Aaditya to review the Sarvam Kivi service.
 ```
 
-## 3. Memory abstraction
+Kivi does not blindly replace words. It learns from repeated evidence, checks confidence and context, and can deliberately choose to **IGNORE** a correction when the evidence is insufficient or ambiguous.
 
-```json
-{
-  "id": "mem_...",
-  "user_id": "user_1",
-  "source_term": "Aditya",
-  "preferred_term": "Aaditya",
-  "normalized_source": "aditya",
-  "memory_type": "PERSON_NAME",
-  "status": "ACTIVE",
-  "confidence": 0.94,
-  "supporting_evidence_count": 5,
-  "conflicting_evidence_count": 0,
-  "context_tokens": ["sarvam", "review"],
-  "is_common_word": false
-}
+---
+
+# 1. What This Project Implements
+
+Kivi implements a memory layer for ASR post-processing.
+
+The system can:
+
+- learn user-specific word preferences
+- learn from normal ASR + formatted text pairs
+- maintain supporting and conflicting evidence
+- calculate confidence
+- activate memories only after sufficient evidence
+- retrieve memories relevant to the current user
+- use context for ambiguous/common words
+- apply corrections when confidence is high enough
+- abstain when confidence is insufficient
+- explain every APPLY/IGNORE decision
+- expose memory and decision history through APIs
+- provide a browser UI for teaching, testing, and inspection
+- run locally with Python
+- optionally run using Docker Compose
+- run deterministic automated evaluation
+
+---
+
+# 2. Assignment Requirements
+
+The implementation addresses the following requirements:
+
+- Take ASR output and normally formatted text as input.
+- Produce memory-aware output.
+- Learn through ordinary use.
+- Do not require a developer to manually insert memory records into the database.
+- Treat abstention as a first-class behavior.
+- Make decisions explainable.
+- Make learned memories inspectable.
+- Show evidence supporting a memory.
+- Show conflicting evidence.
+- Explain why a memory was applied or ignored.
+- Work beyond the supplied example.
+- Provide reproducible evaluation.
+
+The assignment leaves technology choices open.
+
+Kivi uses Python, FastAPI, SQLite, plain HTML/CSS/JavaScript, and deterministic logic.
+
+---
+
+# 3. Important: How to Run the Project After Downloading
+
+This section is the most important part for a reviewer.
+
+If you receive the project as:
+
+```text
+KIVI.zip
 ```
 
-**What Kivi can distinguish, and why it matters:**
+follow these steps.
 
-- **Ordinary formatting vs. a real memory candidate** (`validation.py`).
-  Capitalizing "aditya" -> "Aditya" is something any formatter should do
-  for anyone; it must never become a per-user memory, or Kivi would "learn"
-  thousands of meaningless facts and its memory list would be useless.
-- **Case/punctuation-only vs. letter-level spelling difference.** Only the
-  latter is a candidate. This is the line between "the formatter did its
-  job" and "the user has a specific spelling preference."
-- **A memory whose source term is an ordinary dictionary word** (`kiwi`,
-  `current`, `orange`, ...) vs. one that isn't (`aditya`). This matters
-  because ordinary words are ambiguous -- "kiwi" the fruit and "Kivi" the
-  product sound identical -- so applying the correction requires
-  supporting context (see section 6). Non-ordinary terms don't need this
-  extra gate; there's no common English word "aditya" competing for the
-  same sound.
-- **Supporting vs. conflicting evidence**, tracked as separate counters
-  rather than a single running "confidence" number, so provenance survives
-  even after confidence changes (see section 7).
+## Step 1 — Download the ZIP
 
-**What it deliberately does not distinguish:** the taxonomy of
-`memory_type` (PERSON_NAME / PRODUCT_NAME / COMPANY_NAME / TECHNICAL_TERM /
-USER_SPECIFIC_TERM / SPELLING_VARIANT) is a labeling convenience for the
-UI, produced by a small heuristic (a short list of common first-name
-patterns, otherwise "does it look like a proper noun") -- it does **not**
-gate any decision. Getting the label wrong (e.g. classifying a company name
-as USER_SPECIFIC_TERM) has no effect on whether the memory is applied. Only
-`is_common_word`, `status`, and `confidence` are decision-relevant.
+Download `KIVI.zip` to your computer.
 
-## 4. Candidate extraction (`memory/extraction.py`)
+## Step 2 — Extract the ZIP
 
-ASR and formatted text are tokenized (words and punctuation as separate
-tokens), normalized (lowercased, edge punctuation stripped), and aligned
-with `difflib.SequenceMatcher`. Each `replace` opcode of up to 3 tokens on
-either side becomes a `RawCandidate`. Leading/trailing tokens with no
-letters (pure punctuation swept in by the alignment) are trimmed off the
-edges of the candidate before it's considered, so a trailing "." never
-contaminates a term like "OpenAI".
+Extract the ZIP file.
 
-`equal` and `insert`/`delete` opcodes are not candidates at all -- an
-insertion (e.g. the formatter adding "Could you please") is grammar, not a
-personal term.
+After extraction you should have a project folder similar to:
 
-## 5. Candidate validation (`memory/validation.py`)
-
-Rejected as ordinary formatting:
-- source and preferred terms are identical once lowercased (pure case
-  change), OR (for single-word terms) identical once all punctuation is
-  stripped (pure punctuation change, e.g. "dont" vs "don't").
-- the terms differ by more than 60% of their length in edit distance --
-  that's a grammar rewrite or an unrelated ASR error, not a spelling
-  preference (`MAX_RELATIVE_EDIT_DISTANCE` in `config.py`).
-- either term is shorter than 2 characters.
-
-Multi-word terms (e.g. "open ai" -> "OpenAI") are exempt from the "pure
-case" identity check on their *joined* form, because merging two words into
-one **is** the personal preference being taught, even when no individual
-letter's case changed.
-
-Accepted candidates are tagged with a `memory_type` guess and an
-`is_common_word` flag (see section 6).
-
-## 6. Confidence (`memory/confidence.py`)
-
-```
-confidence = supporting / (supporting + conflicting + 1)
+```text
+KIVI/
+├── backend/
+├── frontend/
+├── database/
+├── data/
+├── evaluation/
+├── tests/
+├── docker-compose.yml
+├── .env.example
+└── README.md
 ```
 
-Add-one (Laplace) smoothing. Properties, all deliberate:
-- One supporting observation alone gives confidence 0.5 -- never enough by
-  itself to leave CANDIDATE status (see section 7's `MIN_SUPPORTING_FOR_ACTIVE
-  = 2`). A single correction could be a one-off, not a standing preference.
-- Confidence rises smoothly with consistent evidence (2 -> 0.67, 5 -> 0.83, ...)
-  and never reaches 1.0.
-- A single piece of conflicting evidence hurts more, proportionally, when
-  supporting evidence is still low -- exactly when we should be least sure.
+**Do not run the commands from inside `data/`.**
 
-Thresholds (`config.py`, all validated against `evaluation/`):
-- `MIN_SUPPORTING_FOR_ACTIVE = 2`
-- `CONFIDENCE_ACTIVE_THRESHOLD = 0.60`
-- `CONFIDENCE_APPLY_THRESHOLD = 0.60`
-- `CONFIDENCE_DEACTIVATE_THRESHOLD = 0.35`
+For Docker, run commands from the project root where `docker-compose.yml` is located.
 
-## 7. Memory lifecycle (`memory/lifecycle.py`)
+For Python, run commands from `backend/`.
 
+---
+
+# 4. Recommended Way to Run Kivi
+
+There are two supported ways to run the application:
+
+### Option A — Python
+
+This is the primary development/review path.
+
+### Option B — Docker Compose
+
+This is the convenient containerized path.
+
+If Python is already installed, Option A is the simplest way to verify the project.
+
+If Docker is installed and working, Option B can be used.
+
+---
+
+# 5. Option A — Run with Python
+
+## Step 1 — Open a terminal
+
+Navigate to the extracted Kivi project.
+
+Example:
+
+```bash
+cd ~/Downloads/KIVI
 ```
-   1st supporting evidence
-CANDIDATE ──────────────────────────► CANDIDATE (still, until threshold met)
-   │  2nd+ supporting evidence AND confidence >= 0.60
-   ▼
-ACTIVE ───────────────────────────────► UPDATED  (confidence changed, still >= 0.35)
-   │
-   │  confidence drops below 0.35 (conflicting evidence)
-   ▼
-DEACTIVATED  ◄── or explicit POST /memory/{id}/deactivate
+
+Your exact path may be different.
+
+Check that you are in the project root:
+
+```bash
+ls
 ```
 
-We never overwrite `preferred_term` on conflicting evidence -- see the
-worked example in section 9. A `DEACTIVATED` memory does not silently
-reactivate from new matching evidence; it stays inert (the observation is
-still logged for provenance) until someone deliberately re-teaches it,
-which will create a **new** memory only if the old row is deleted -- in the
-current schema a deactivated row's `(user_id, normalized_source)` still
-occupies the uniqueness constraint, so in practice deactivation here is
-treated as durable. This is a documented limitation (section 12), not an
-oversight: "should a deactivated memory be able to reactivate on its own"
-is exactly the kind of aggressive-correction behavior section 25 asks us
-to avoid defaulting to.
+You should see something similar to:
 
-## 8. Retrieval (`retrieval/retrieve.py`)
+```text
+backend
+frontend
+database
+data
+evaluation
+tests
+docker-compose.yml
+README.md
+```
 
-For a processing request, all of the user's non-deactivated memories are
-scanned (bounded by that user's memory count, not the whole table) and a
-memory is retrieved if its `normalized_source` phrase appears as a
-substring of the space-joined, normalized tokens of `asr + formatted`. This
-handles both single-word ("aditya") and multi-word ("open ai") terms with
-one code path.
+---
 
-## 9. Decision engine (`decision/engine.py`)
+# 6. Step 2 — Go to Backend
 
-For each retrieved memory, checked in order (first failing check is the
-stated reason):
+Run:
 
-1. `status` must be `ACTIVE`/`UPDATED` -- a `CANDIDATE` hasn't earned
-   enough evidence yet.
-2. `confidence >= CONFIDENCE_APPLY_THRESHOLD` (0.60).
-3. `conflicting_evidence_count < supporting_evidence_count` -- an explicit,
-   separately-explainable belt-and-braces check on top of confidence.
-4. If `is_common_word`, the current input must share at least one token
-   with the memory's stored `context_tokens` (see section 4's extraction
-   and the note below on context filtering), or the decision is IGNORE.
+```bash
+cd backend
+```
 
-Anything that clears all four is APPLY.
+---
 
-**Worked example -- conflicting evidence (why we don't overwrite):**
-Observation 1: `aditya -> Aaditya` (supporting). Observation 2:
-`aditya -> Aditya` (no correction applied -- conflicting). Observation 3:
-`aditya -> Aaditya` (supporting again). Result: supporting=2,
-conflicting=1, confidence = 2/(2+1+1) = 0.5, which is **below** the 0.60
-apply threshold -- Kivi abstains on the next mention of "aditya" rather
-than guessing which spelling is currently intended. `preferred_term`
-stays `Aaditya` throughout; it is never flipped back to `Aditya` on the
-conflicting observation.
+# 7. Step 3 — Install Python Dependencies
 
-**Context filtering:** naive "neighboring word" context would include
-filler words ("the", "check", "service") that appear in almost every
-sentence, making the relevance gate meaningless. `context_tokens` therefore
-excludes both a small stopword list and words already in the
-common-word list (`common_words.py`, `is_context_noise`) -- only
-distinguishing terms like "sarvam" or "billing" count as context.
+Run:
 
-## 10. AI/LLM usage
+```bash
+pip install -r requirements.txt --break-system-packages
+```
 
-**None.** Every decision in this pipeline -- extraction, validation,
-confidence, lifecycle, retrieval, and the APPLY/IGNORE decision -- is
-deterministic Python, matching the brief's preference for deterministic
-backend logic wherever possible (section 47 of the original instruction
-doc, and implicit throughout the PDF's emphasis on explainability). No API
-key is required to run this project; `evaluation/metrics.json` reports
-`model_calls: 0` and `estimated_cost_usd: 0.0` for every run, truthfully,
-because none are made.
+If your Python environment does not require `--break-system-packages`, you can use:
 
-This is a stated trade-off, not a claim that ambiguity resolution or
-candidate classification couldn't benefit from a language model -- see
-Limitations below.
+```bash
+pip install -r requirements.txt
+```
 
-## 11. Provenance
+The project was developed with Python 3.12.3.
 
-Every memory's evidence is stored in `memory_evidence` (asr_text,
-formatted_text, evidence_type, source_id, timestamp) and every decision is
-stored in `memory_decisions` (input, decision, confidence, reason,
-timestamp). `GET /memory/{id}` returns the memory plus its full evidence
-and decision history; `GET /decisions/{id}` returns one decision record.
-Nothing about "why does Kivi believe this" is hidden behind a log file the
-reviewer can't reach through the API/UI.
+---
 
-## 12. Known limitations
+# 8. Step 4 — Database
 
-- **Ambiguity detection is a hand-built word list, not a language model or
-  dictionary API.** It's small, offline, and reproducible, but not
-  linguistically complete -- an ordinary word missing from
-  `common_words.py` would be treated as unambiguous and could over-apply.
-- **One memory row per (user, normalized source term).** Two genuinely
-  different people who both sound like "aditya" cannot be modeled as two
-  separate memories; competing corrections instead show up as conflicting
-  evidence on a single row, which erodes confidence rather than
-  disambiguating between them. Modeling multiple senses of one term would
-  need per-context memory rows, which we judged unnecessary complexity for
-  this system's scope (see brief section 19: don't build relationships
-  unless they provide real value).
-- **Deactivation is durable within a session**, as discussed in section 7 --
-  there's no automatic path back to CANDIDATE for a deactivated term.
-- **The 30-case evaluation dataset is small and self-consistent** (we wrote
-  both the cases and the system, so 100% pass is a check that the
-  documented rules are implemented correctly and consistently -- not
-  independent evidence of generalization to unseen, adversarial, or
-  larger-scale transcripts). See `evaluation/results/report.md` for exactly
-  which cases exist.
-- **English-only.** Tokenization, the common-word list, and the name-hint
-  list assume English text.
-## Database File (`kivi.db`)
+You do **not** need to manually create `kivi.db`.
 
-Kivi uses SQLite for durable memory storage.
+Kivi automatically creates/applies the database schema when the application starts.
+
+The migration is located at:
+
+```text
+database/migrations/001_init.sql
+```
 
 The runtime database is:
 
@@ -292,19 +224,1411 @@ The runtime database is:
 data/kivi.db
 ```
 
-`kivi.db` is a generated/runtime file and is **not required to be committed to the repository**. The database schema is created automatically from:
+If `data/kivi.db` does not exist after extracting the ZIP, that is okay.
+
+The application can create it.
+
+---
+
+# 9. Why `kivi.db` May Not Be Included in the ZIP
+
+`kivi.db` is runtime/generated data.
+
+It contains things such as:
+
+- learned memories
+- evidence
+- decisions
+- user data
+
+The database schema is stored separately in:
 
 ```text
 database/migrations/001_init.sql
 ```
 
-when the application starts.
+This means a fresh copy of the repository can recreate the database.
 
-Therefore, a fresh clone can create a working database automatically without requiring a pre-existing `kivi.db`.
+The project therefore does not depend on a pre-existing SQLite database.
 
-### Fresh setup
+If a demo database is supplied separately, it can also be used.
 
-Start the application:
+---
+
+# 10. Optional Manual Migration
+
+If you want to manually apply the migrations before starting the server, from `backend/` run:
+
+```bash
+PYTHONPATH=. python3 -c "from app.db import apply_migrations; print(apply_migrations())"
+```
+
+This step is normally unnecessary because migrations are automatically applied during startup.
+
+---
+
+# 11. Step 5 — Start the Kivi Server
+
+From:
+
+```text
+KIVI/backend
+```
+
+run:
+
+```bash
+KIVI_DB_PATH=../data/kivi.db PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+The application will be available at:
+
+```text
+http://localhost:8000/
+```
+
+---
+
+# 12. Step 6 — Open Kivi in the Browser
+
+Open:
+
+```text
+http://localhost:8000/
+```
+
+The Kivi UI provides:
+
+- Teach It
+- What It Remembers
+- Try It
+- Decision Trace
+- Reset Everything
+
+---
+
+# 13. Health Check
+
+You can verify that the backend is running by opening:
+
+```text
+http://localhost:8000/api/health
+```
+
+or running:
+
+```bash
+curl -s http://localhost:8000/api/health
+```
+
+---
+
+# 14. Stop the Server
+
+When finished, return to the terminal where Uvicorn is running and press:
+
+```text
+Ctrl+C
+```
+
+---
+
+# 15. Optional Seed Data
+
+Kivi includes optional seed data.
+
+The seed file is:
+
+```text
+data/seed/seed.jsonl
+```
+
+It contains example learning observations such as:
+
+```text
+aditya → Aaditya
+```
+
+and:
+
+```text
+kiwi → Kivi
+```
+
+with relevant context.
+
+---
+
+# 16. Import Seed Data
+
+If you want to populate the database with the example memories, first make sure the server is stopped.
+
+From:
+
+```text
+KIVI/backend
+```
+
+run:
+
+```bash
+KIVI_DB_PATH=../data/kivi.db PYTHONPATH=. python3 -m app.import_data ../data/seed/seed.jsonl
+```
+
+Then start the server again:
+
+```bash
+KIVI_DB_PATH=../data/kivi.db PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Open:
+
+```text
+http://localhost:8000/
+```
+
+---
+
+# 17. Option B — Run with Docker
+
+If Docker and Docker Compose are installed and working, you can run the entire application using Docker.
+
+## Step 1 — Go to the Project Root
+
+After extracting the ZIP:
+
+```bash
+cd KIVI
+```
+
+Make sure you are **not** inside:
+
+```text
+KIVI/data
+```
+
+and not inside:
+
+```text
+KIVI/backend
+```
+
+For Docker Compose, use the project root where:
+
+```text
+docker-compose.yml
+```
+
+is located.
+
+---
+
+# 18. Step 2 — Build and Start Kivi
+
+Run:
+
+```bash
+docker compose up --build
+```
+
+Docker will:
+
+1. build the application image
+2. install dependencies
+3. start the Kivi application
+4. expose port `8000`
+
+---
+
+# 19. Step 3 — Open Kivi
+
+Once Docker has started successfully, open:
+
+```text
+http://localhost:8000/
+```
+
+---
+
+# 20. Docker in the Background
+
+If you want Docker to run in the background:
+
+```bash
+docker compose up --build -d
+```
+
+Then open:
+
+```text
+http://localhost:8000/
+```
+
+---
+
+# 21. Stop Docker
+
+Run:
+
+```bash
+docker compose down
+```
+
+---
+
+# 22. Full Docker Reset
+
+To completely recreate the Docker environment and remove Docker volumes:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Be aware that:
+
+```bash
+docker compose down -v
+```
+
+removes the associated Docker volume data.
+
+---
+
+# 23. Docker Evaluation
+
+The evaluation service can be run using:
+
+```bash
+docker compose run --rm evaluation
+```
+
+---
+
+# 24. Project Structure
+
+The extracted project should look approximately like:
+
+```text
+KIVI/
+│
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   │   └── routes.py
+│   │   │
+│   │   ├── memory/
+│   │   │   ├── lifecycle.py
+│   │   │   ├── extraction.py
+│   │   │   ├── validation.py
+│   │   │   └── confidence.py
+│   │   │
+│   │   ├── retrieval/
+│   │   │   └── retrieve.py
+│   │   │
+│   │   ├── decision/
+│   │   │   └── engine.py
+│   │   │
+│   │   ├── formatter/
+│   │   │   └── format.py
+│   │   │
+│   │   ├── db.py
+│   │   └── main.py
+│   │
+│   └── requirements.txt
+│
+├── frontend/
+│   ├── index.html
+│   ├── style.css
+│   └── app.js
+│
+├── database/
+│   └── migrations/
+│       └── 001_init.sql
+│
+├── data/
+│   ├── seed/
+│   │   └── seed.jsonl
+│   └── kivi.db
+│
+├── evaluation/
+│   ├── generate_dataset.py
+│   ├── runner.py
+│   └── results/
+│       ├── results.json
+│       ├── metrics.json
+│       └── report.md
+│
+├── tests/
+│
+├── docker-compose.yml
+├── .env.example
+└── README.md
+```
+
+`kivi.db` is runtime state and does not have to be committed to source control.
+
+---
+
+# 25. Architecture
+
+```text
+                         Browser
+                            │
+                            │ HTTP
+                            ▼
+                 ┌──────────────────────┐
+                 │      FastAPI         │
+                 │     backend/app      │
+                 └──────────┬───────────┘
+                            │
+             ┌──────────────┼──────────────┐
+             │              │              │
+             ▼              ▼              ▼
+       Learning        Retrieval       Decision
+       Pipeline         Engine          Engine
+             │              │              │
+             ▼              │              ▼
+       Extraction           │          APPLY / IGNORE
+       Validation            │              │
+       Confidence            │              ▼
+       Lifecycle             │         Formatter
+             │               │              │
+             └───────────────┴──────────────┘
+                            │
+                            ▼
+                       SQLite DB
+                       data/kivi.db
+```
+
+---
+
+# 26. Learning Pipeline
+
+Kivi learns from ordinary usage.
+
+The learning flow is:
+
+```text
+ASR + Formatted Text
+        │
+        ▼
+Candidate Extraction
+        │
+        ▼
+Candidate Validation
+        │
+        ▼
+Existing Memory Lookup
+        │
+        ├───────────────┐
+        │               │
+        ▼               ▼
+   New Memory       Existing Memory
+        │               │
+        ▼               ├── agrees → support +1
+    CANDIDATE           │
+                        └── disagrees → conflict +1
+                                │
+                                ▼
+                         Confidence Update
+                                │
+                                ▼
+                         Lifecycle Update
+```
+
+---
+
+# 27. Candidate Extraction
+
+Kivi compares ASR text with the formatted text.
+
+The comparison uses:
+
+```python
+difflib.SequenceMatcher
+```
+
+The system:
+
+- tokenizes the text
+- normalizes words
+- separates punctuation
+- aligns the two versions
+- identifies replacement candidates
+
+Pure insertions/deletions are not automatically treated as memory corrections.
+
+---
+
+# 28. Candidate Validation
+
+Kivi rejects changes that look like ordinary formatting rather than user-specific memory.
+
+Examples that are rejected:
+
+```text
+aditya → Aditya
+```
+
+because it is only capitalization.
+
+Punctuation-only changes are also rejected.
+
+Candidates with excessive edit distance are rejected.
+
+Candidates shorter than two characters are rejected.
+
+Multi-word changes such as:
+
+```text
+open ai → OpenAI
+```
+
+can be accepted.
+
+---
+
+# 29. Memory Lifecycle
+
+A memory moves through lifecycle states:
+
+```text
+CANDIDATE
+    │
+    │ enough supporting evidence
+    ▼
+ACTIVE
+    │
+    │ changed evidence
+    ▼
+UPDATED
+    │
+    │ confidence becomes too low
+    ▼
+DEACTIVATED
+```
+
+Configured thresholds:
+
+```text
+MIN_SUPPORTING_FOR_ACTIVE = 2
+
+CONFIDENCE_ACTIVE_THRESHOLD = 0.60
+
+CONFIDENCE_APPLY_THRESHOLD = 0.60
+
+CONFIDENCE_DEACTIVATE_THRESHOLD = 0.35
+```
+
+---
+
+# 30. Confidence Calculation
+
+Kivi calculates:
+
+```text
+confidence =
+supporting /
+(supporting + conflicting + 1)
+```
+
+For example:
+
+```text
+supporting = 2
+conflicting = 0
+```
+
+produces:
+
+```text
+2 / (2 + 0 + 1)
+= 0.67
+```
+
+This is above the `0.60` activation/application threshold.
+
+---
+
+# 31. Conflicting Evidence
+
+Kivi does not immediately overwrite a learned preference when a conflicting observation appears.
+
+Example:
+
+```text
+aditya → Aaditya
+```
+
+supporting evidence.
+
+Then:
+
+```text
+aditya → Aditya
+```
+
+conflicting evidence.
+
+Then another:
+
+```text
+aditya → Aaditya
+```
+
+supporting evidence.
+
+Final counts:
+
+```text
+supporting = 2
+conflicting = 1
+```
+
+Confidence:
+
+```text
+2 / (2 + 1 + 1)
+= 0.50
+```
+
+Therefore the system ignores the memory because confidence is below `0.60`.
+
+This is intentionally conservative.
+
+---
+
+# 32. Common-Word Ambiguity
+
+Kivi handles ambiguous common words differently.
+
+Example:
+
+```text
+kiwi → Kivi
+```
+
+The word `kiwi` can refer to the fruit or to a user-specific product/company term.
+
+Therefore context matters.
+
+For example:
+
+```text
+Ask Aditya to review the Sarvam Kiwi service.
+```
+
+contains relevant context:
+
+```text
+Sarvam
+```
+
+and can justify:
+
+```text
+Kivi
+```
+
+But:
+
+```text
+I ate a kiwi yesterday.
+```
+
+should remain:
+
+```text
+I ate a kiwi yesterday.
+```
+
+The system should not blindly apply:
+
+```text
+kiwi → Kivi
+```
+
+to every occurrence.
+
+---
+
+# 33. Retrieval
+
+Kivi retrieves memories belonging to the current user.
+
+A memory is eligible for consideration when its normalized source term appears in the normalized input.
+
+Deactivated memories are not retrieved for application.
+
+---
+
+# 34. Decision Engine
+
+For each candidate memory, Kivi checks:
+
+### 1. Memory Status
+
+The memory must be:
+
+```text
+ACTIVE
+```
+
+or:
+
+```text
+UPDATED
+```
+
+### 2. Confidence
+
+The memory must satisfy:
+
+```text
+confidence >= 0.60
+```
+
+### 3. Evidence Balance
+
+Conflicting evidence must not be greater than supporting evidence.
+
+### 4. Context
+
+Common-word memories need meaningful contextual support.
+
+If the checks pass:
+
+```text
+APPLY
+```
+
+Otherwise:
+
+```text
+IGNORE
+```
+
+---
+
+# 35. Explainability
+
+Every decision has a reason.
+
+For example:
+
+```text
+Decision: APPLY
+
+Reason:
+Memory is active, confidence is above threshold,
+and the input contains relevant context.
+```
+
+Or:
+
+```text
+Decision: IGNORE
+
+Reason:
+Memory confidence is below the application threshold.
+```
+
+Or:
+
+```text
+Decision: IGNORE
+
+Reason:
+Common-word memory lacks relevant contextual evidence.
+```
+
+This allows a reviewer to inspect why the system acted.
+
+---
+
+# 36. Provenance
+
+Kivi stores evidence in:
+
+```text
+memory_evidence
+```
+
+and decision history in:
+
+```text
+memory_decisions
+```
+
+Evidence includes:
+
+- ASR input
+- formatted input
+- evidence type
+- source ID
+- timestamp
+
+Decision records include:
+
+- input
+- decision
+- confidence
+- reason
+- timestamp
+
+---
+
+# 37. API Endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/health` | Health check |
+| POST | `/api/memory/learn` | Learn a new observation |
+| GET | `/api/memory` | List memories |
+| GET | `/api/memory/{id}` | Inspect memory |
+| POST | `/api/memory/{id}/deactivate` | Deactivate memory |
+| POST | `/api/transcript/process` | Process ASR + formatted text |
+| GET | `/api/decisions/{id}` | Inspect decision |
+| POST | `/api/import` | Import observations |
+| POST | `/api/reset` | Reset runtime data |
+
+---
+
+# 38. Example: Teach Kivi
+
+You can teach Kivi through the API.
+
+```bash
+curl -s -X POST localhost:8000/api/memory/learn \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id":"user_1",
+    "asr":"ask aditya to call me",
+    "formatted":"Ask Aaditya to call me."
+  }'
+```
+
+One observation creates a candidate.
+
+A second consistent observation can provide enough evidence for activation.
+
+---
+
+# 39. Example: List Memories
+
+```bash
+curl -s "http://localhost:8000/api/memory?user_id=user_1"
+```
+
+---
+
+# 40. Example: Process a Transcript
+
+After the memory has enough evidence:
+
+```bash
+curl -s -X POST localhost:8000/api/transcript/process \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id":"user_1",
+    "asr":"ask aditya about the meeting",
+    "formatted":"Ask Aditya about the meeting."
+  }'
+```
+
+Expected output:
+
+```text
+Ask Aaditya about the meeting.
+```
+
+The response also contains decision information.
+
+---
+
+# 41. Example: Inspect a Memory
+
+After obtaining a memory ID:
+
+```bash
+curl -s "http://localhost:8000/api/memory/<memory_id>"
+```
+
+This can show:
+
+- memory
+- confidence
+- supporting evidence
+- conflicting evidence
+- decision history
+
+---
+
+# 42. Example: Inspect a Decision
+
+After obtaining a decision ID:
+
+```bash
+curl -s "http://localhost:8000/api/decisions/<decision_id>"
+```
+
+This shows why Kivi decided to APPLY or IGNORE.
+
+---
+
+# 43. Example: Deactivate a Memory
+
+```bash
+curl -s -X POST \
+  "http://localhost:8000/api/memory/<memory_id>/deactivate"
+```
+
+The memory becomes:
+
+```text
+DEACTIVATED
+```
+
+and is not used for future automatic application.
+
+---
+
+# 44. Reset the Application
+
+To reset runtime data:
+
+```bash
+curl -s -X POST localhost:8000/api/reset
+```
+
+This resets the runtime state while retaining the database schema.
+
+---
+
+# 45. UI Walkthrough
+
+Open:
+
+```text
+http://localhost:8000/
+```
+
+## Teach It
+
+Enter:
+
+```text
+ASR:
+ask aditya to call me
+
+Formatted:
+Ask Aaditya to call me.
+```
+
+Submit the example.
+
+Repeat with another consistent observation.
+
+## What It Remembers
+
+Inspect the learned memory.
+
+You should be able to see information such as:
+
+```text
+aditya → Aaditya
+```
+
+along with:
+
+- status
+- confidence
+- supporting evidence
+- conflicting evidence
+
+## Try It
+
+Enter:
+
+```text
+ASR:
+ask aditya about the meeting
+
+Formatted:
+Ask Aditya about the meeting.
+```
+
+Kivi should produce:
+
+```text
+Ask Aaditya about the meeting.
+```
+
+when the memory is active and applicable.
+
+## Decision Trace
+
+Inspect:
+
+```text
+APPLY
+```
+
+or:
+
+```text
+IGNORE
+```
+
+and the explanation for that decision.
+
+---
+
+# 46. Test Abstention
+
+Use the common-word memory:
+
+```text
+kiwi → Kivi
+```
+
+Then test:
+
+```text
+I ate a kiwi yesterday.
+```
+
+Kivi should preserve:
+
+```text
+I ate a kiwi yesterday.
+```
+
+rather than blindly producing:
+
+```text
+I ate a Kivi yesterday.
+```
+
+The decision trace should explain why the memory was ignored.
+
+---
+
+# 47. Evaluation
+
+The project includes a deterministic evaluation suite.
+
+Current evaluation:
+
+```text
+30 cases
+10 categories
+```
+
+Each case uses an isolated user ID so that one evaluation case does not accidentally teach another case.
+
+---
+
+# 48. Run Evaluation
+
+From the project root:
+
+```bash
+PYTHONPATH=backend python3 -m evaluation.runner
+```
+
+Results are written to:
+
+```text
+evaluation/results/results.json
+evaluation/results/metrics.json
+evaluation/results/report.md
+```
+
+---
+
+# 49. Evaluation Dataset
+
+The dataset generator is:
+
+```text
+evaluation/generate_dataset.py
+```
+
+To regenerate the dataset:
+
+```bash
+python3 evaluation/generate_dataset.py
+```
+
+---
+
+# 50. Automated Tests
+
+The project includes:
+
+```text
+22 automated tests
+```
+
+Run:
+
+```bash
+PYTHONPATH=backend python3 -m pytest tests/ -v
+```
+
+---
+
+# 51. Current Evaluation Result
+
+The current documented result is:
+
+```text
+30/30 passing
+```
+
+This should be interpreted honestly.
+
+The evaluation dataset was developed together with the implementation.
+
+Therefore:
+
+```text
+30/30
+```
+
+demonstrates consistency with the project's evaluation suite.
+
+It does not prove:
+
+- 100% real-world accuracy
+- universal ASR correction accuracy
+- large-scale production robustness
+- broad linguistic coverage
+- generalization to arbitrary unseen data
+
+---
+
+# 52. AI / LLM Usage
+
+Kivi does not use an LLM.
+
+Model calls:
+
+```text
+0
+```
+
+Estimated model/API cost:
+
+```text
+$0
+```
+
+The pipeline is deterministic.
+
+This means:
+
+- no API key required
+- no model dependency
+- no token cost
+- no network dependency
+- reproducible results
+- deterministic decisions
+
+---
+
+# 53. Database
+
+Kivi uses:
+
+```text
+SQLite
+```
+
+through:
+
+```text
+sqlite3
+```
+
+There is no ORM.
+
+The schema is defined in:
+
+```text
+database/migrations/001_init.sql
+```
+
+The runtime database is:
+
+```text
+data/kivi.db
+```
+
+---
+
+# 54. Environment Variables
+
+An optional environment file is provided:
+
+```text
+.env.example
+```
+
+The main configuration variable is:
+
+```text
+KIVI_DB_PATH
+```
+
+Default:
+
+```text
+data/kivi.db
+```
+
+No API keys are required.
+
+---
+
+# 55. Python Version
+
+The implementation was developed and tested using:
+
+```text
+Python 3.12.3
+```
+
+The project does not require Node.js or npm.
+
+---
+
+# 56. Limitations
+
+### 1. Common-word list
+
+Common-word ambiguity uses a hand-built list.
+
+It is deterministic but not linguistically complete.
+
+### 2. One memory per normalized source term
+
+The current design stores one memory per:
+
+```text
+(user, normalized source term)
+```
+
+Competing preferences therefore become conflicting evidence rather than separate memories.
+
+### 3. Deactivation
+
+Deactivated memories do not automatically reactivate.
+
+### 4. Evaluation size
+
+The evaluation contains 30 cases.
+
+It is useful for reproducibility but is not a large independent benchmark.
+
+### 5. English
+
+The current tokenizer and ambiguity rules are designed for English.
+
+---
+
+# 57. Git / Repository Recommendations
+
+The following generated/runtime files should normally not be committed:
+
+```gitignore
+data/kivi.db
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
+```
+
+The following should be committed:
+
+```text
+database/migrations/
+data/seed/
+evaluation/
+tests/
+backend/
+frontend/
+docker-compose.yml
+README.md
+```
+
+---
+
+# 58. What a Reviewer Should Do
+
+If reviewing from the ZIP, the simplest workflow is:
+
+### 1. Download
+
+```text
+KIVI.zip
+```
+
+### 2. Extract
+
+Extract to:
+
+```text
+KIVI/
+```
+
+### 3. Open terminal
+
+Go to the extracted project:
+
+```bash
+cd KIVI
+```
+
+### 4. Start with Docker
+
+If Docker is available:
+
+```bash
+docker compose up --build
+```
+
+### 5. Open browser
+
+Go to:
+
+```text
+http://localhost:8000/
+```
+
+### 6. Test the UI
+
+Use:
+
+```text
+Teach It
+```
+
+then:
+
+```text
+What It Remembers
+```
+
+then:
+
+```text
+Try It
+```
+
+then:
+
+```text
+Decision Trace
+```
+
+### 7. Run tests
+
+In another terminal:
+
+```bash
+PYTHONPATH=backend python3 -m pytest tests/ -v
+```
+
+### 8. Run evaluation
+
+```bash
+PYTHONPATH=backend python3 -m evaluation.runner
+```
+
+---
+
+# 59. If Docker Is Not Available
+
+Use Python instead.
+
+From the extracted project:
+
+```bash
+cd KIVI/backend
+```
+
+Install:
+
+```bash
+pip install -r requirements.txt --break-system-packages
+```
+
+Start:
+
+```bash
+KIVI_DB_PATH=../data/kivi.db PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Open:
+
+```text
+http://localhost:8000/
+```
+
+---
+
+# 60. One-Command Docker Startup
+
+For a reviewer who simply wants to run the application:
+
+```bash
+cd KIVI
+docker compose up --build
+```
+
+Then open:
+
+```text
+http://localhost:8000/
+```
+
+That is the intended simplest Docker workflow.
+
+---
+
+# 61. One-Command Python Startup After Dependencies
+
+Once dependencies are installed:
+
+```bash
+cd KIVI/backend
+KIVI_DB_PATH=../data/kivi.db PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Then open:
+
+```text
+http://localhost:8000/
+```
+
+---
+
+# 62. Complete Verification
+
+A reviewer can verify the complete project using:
+
+```bash
+# From project root
+
+PYTHONPATH=backend python3 -m pytest tests/ -v
+
+PYTHONPATH=backend python3 -m evaluation.runner
+```
+
+Then start the server:
 
 ```bash
 cd backend
@@ -312,40 +1636,31 @@ cd backend
 KIVI_DB_PATH=../data/kivi.db \
 PYTHONPATH=. \
 uvicorn app.main:app \
-  --host 0.0.0.0 \
-  --port 8000
+--host 0.0.0.0 \
+--port 8000
 ```
 
-On startup, Kivi automatically applies the database migrations.
-
-### Optional seed data
-
-To populate the database with the demonstration memories, import:
+Open:
 
 ```text
-data/seed/seed.jsonl
+http://localhost:8000/
 ```
 
-using:
+---
 
-```bash
-cd backend
+# 63. Final Submission Information
 
-KIVI_DB_PATH=../data/kivi.db \
-PYTHONPATH=. \
-python3 -m app.import_data ../data/seed/seed.jsonl
+Before submitting the assignment, fill in:
+
+```text
+GitHub Repository:
+<YOUR_GITHUB_REPOSITORY_URL>
+
+Final Commit SHA:
+<YOUR_FINAL_COMMIT_SHA>
+
+Hosted URL:
+<YOUR_HOSTED_URL_OR_N/A>
 ```
 
-This creates the demo memory state through the normal learning/import pipeline rather than by manually inserting database rows.
-
-### Why `kivi.db` is not committed
-
-The SQLite file contains runtime state such as learned memories, evidence, and decision history. Keeping it out of source control makes the repository reproducible and allows the database to be recreated from the committed migration and seed files.
-
-If a reviewer already has a `data/kivi.db`, it can be used directly by setting:
-
-```bash
-KIVI_DB_PATH=../data/kivi.db
-```
-
-The database file may also be supplied separately when inspecting a particular runtime/demo state.
+Do not put placeholder values in the final submission.
