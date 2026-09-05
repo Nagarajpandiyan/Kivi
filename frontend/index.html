@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kivi — the words it keeps</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <h1>The words Kivi keeps</h1>
+      <p class="tagline">A word-level phonetic memory for ASR transcripts. Teach it, watch it decide, ask it why.</p>
+    </div>
+    <div class="masthead-actions">
+      <label class="field-inline">
+        user
+        <input id="user-id" value="user_1" />
+      </label>
+      <button id="reset-btn" class="btn btn-quiet">Reset everything</button>
+    </div>
+  </header>
+
+  <main class="grid">
+
+    <section class="panel" id="panel-learn">
+      <h2>Teach it</h2>
+      <p class="hint">Give Kivi an ASR transcript and the formatted text it produced. Repeat with similar words to build confidence.</p>
+      <label>ASR output
+        <textarea id="learn-asr" rows="2" placeholder="ask aditya to review the sarvam kiwi service"></textarea>
+      </label>
+      <label>Formatted output
+        <textarea id="learn-formatted" rows="2" placeholder="Ask Aditya to review the Sarvam Kivi service."></textarea>
+      </label>
+      <button id="learn-btn" class="btn">Teach Kivi this observation</button>
+      <div id="learn-result" class="result-block"></div>
+    </section>
+
+    <section class="panel" id="panel-memory">
+      <h2>What it remembers</h2>
+      <p class="hint">Every stored term, its lifecycle status, and how confident Kivi is.</p>
+      <div id="memory-list" class="memory-list"></div>
+    </section>
+
+    <section class="panel" id="panel-test">
+      <h2>Try it</h2>
+      <p class="hint">Give Kivi a new transcript. See the memory-aware output and why it did or didn't intervene.</p>
+      <label>ASR output
+        <textarea id="test-asr" rows="2" placeholder="ask aditya about the meeting"></textarea>
+      </label>
+      <label>Formatted output
+        <textarea id="test-formatted" rows="2" placeholder="Ask Aditya about the meeting."></textarea>
+      </label>
+      <button id="test-btn" class="btn">Process</button>
+
+      <div id="test-result" class="result-block"></div>
+    </section>
+
+    <section class="panel panel-wide" id="panel-trace">
+      <h2>Decision trace</h2>
+      <p class="hint">Every memory Kivi looked at for the last request, and the reasoning behind APPLY or IGNORE.</p>
+      <div id="trace-list"></div>
+    </section>
+
+  </main>
+
+  <footer class="foot">
+    Backend-focused  assignment.
+  </footer>
+
+<script src="app.js"></script>
+</body>
+</html>
